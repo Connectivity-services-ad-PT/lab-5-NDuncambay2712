@@ -1,71 +1,76 @@
-version: "3.8"
-
 services:
-  # Service API FastAPI
-  api:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: fit4110-api-lab05
-    env_file:
-      - .env
-    depends_on:
-      db:
-        condition: service_healthy
-      ai-service:
-        condition: service_healthy
-    networks:
-      - team-internal
-      - class-net
-    ports:
-      - "${APP_PORT:-8000}:8000"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-
-  # PostgreSQL database service
-  db:
-    image: postgres:15-alpine
-    container_name: fit4110-db-lab05
+  team_db:
+    image: mysql:8.0
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-lab05}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lab05pass}
-      POSTGRES_DB: ${POSTGRES_DB:-iotdb}
-    volumes:
-      - db-data:/var/lib/postgresql/data
+      MYSQL_ROOT_PASSWORD: ${DB_PASS:-password}
+      MYSQL_DATABASE: ${DB_NAME:-iot_db}
+      MYSQL_USER: ${DB_USER:-admin}
+      MYSQL_PASSWORD: ${DB_PASS:-password}
+    ports:
+      - "3307:3306"
     networks:
       - team-internal
+    volumes:
+      - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lab05}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # AI service mẫu dùng Python HTTP server hoặc FastAPI
-  ai-service:
-    image: python:3.11-slim
-    container_name: fit4110-ai-lab05
-    working_dir: /service
-    volumes:
-      - ./src/ai_service:/service
-    command: ["python", "main.py"]
+  iot_app:
+    image: team-iot:v0.1.0-team-iot
+    build: .
+    container_name: iot_app
+    command: uvicorn src.iot_app.main:app --host 0.0.0.0 --port 8000
+    depends_on:
+      team_db:
+        condition: service_healthy
+      ai_service:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=iot-ingestion
+      - AUTH_TOKEN=${AUTH_TOKEN:-local-dev-token}
+      - DB_HOST=team_db
+      - DB_PORT=3306
+      - DB_USER=${DB_USER:-admin}
+      - DB_PASS=${DB_PASS:-password}
+      - DB_NAME=${DB_NAME:-iot_db}
+      - AI_SERVICE_URL=${AI_SERVICE_URL:-http://ai_service:8001}
     networks:
       - team-internal
+    volumes:
+      - ./src:/app/src
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import requests; import sys; sys.exit(0) if requests.get('http://localhost:9000/health').status_code == 200 else sys.exit(1)\""]
-      interval: 30s
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 10s
+
+  ai_service:
+    image: team-ai:v0.1.0-team-ai
+    build: .
+    container_name: ai_service
+    command: uvicorn src.ai_service.main:app --host 0.0.0.0 --port 8001
+    ports:
+      - "8001:8001"
+    environment:
+      - SERVICE_NAME=ai-service
+    networks:
+      - team-internal
+    volumes:
+      - ./src:/app/src
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
 
 networks:
   team-internal:
     driver: bridge
-  class-net:
-    external: true
 
 volumes:
-  db-data:
+  db_data:
